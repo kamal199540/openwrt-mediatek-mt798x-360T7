@@ -1,0 +1,81 @@
+name: Build MediaTek OpenWrt 25.12 (MT798x)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Build target'
+        required: true
+        default: 'filogic-mac80211'
+        type: choice
+        options:
+          - filogic
+          - filogic-mac80211
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+    - name: Checkout repository (self)
+      uses: actions/checkout@v4
+
+    - name: Install build dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y build-essential clang flex bison g++ gawk \
+          gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+          python3-distutils python3-setuptools rsync swig unzip zlib1g-dev \
+          file wget time
+
+    - name: Clone OpenWrt source
+      run: |
+        git clone https://git.openwrt.org/openwrt/openwrt.git openwrt
+        cd openwrt
+        git checkout 8a18e84a887379db8954449a9fabe6df54084dea
+        cd ..
+
+    - name: Clone MediaTek feeds
+      run: |
+        git clone --branch master https://git01.mediatek.com/openwrt/feeds/mtk-openwrt-feeds
+        cd mtk-openwrt-feeds
+        git checkout 5ee86b89bc62dee10d8db1e0a48fdd140dd2ec3e
+        cd ..
+
+    - name: Set up autobuild environment
+      run: |
+        cd openwrt
+        bash ../mtk-openwrt-feeds/autobuild/unified/autobuild.sh ${{ github.event.inputs.target }} prepare bootloader=1
+        cd ..
+
+    - name: Build firmware
+      run: |
+        cd openwrt
+        bash ../mtk-openwrt-feeds/autobuild/unified/autobuild.sh build
+        cd ..
+
+    - name: Collect release artifacts
+      run: |
+        cd openwrt
+        bash ../mtk-openwrt-feeds/autobuild/unified/autobuild.sh release bootloader=1
+        cd ..
+
+    - name: Upload firmware images
+      uses: actions/upload-artifact@v4
+      with:
+        name: mediatek-openwrt-${{ github.event.inputs.target }}
+        path: |
+          openwrt/autobuild_release/**/*.itb
+          openwrt/autobuild_release/**/*.bin
+          openwrt/autobuild_release/**/*.img
+          openwrt/autobuild_release/**/*.fip
+        compression-level: 0
+        if-no-files-found: warn
+
+    - name: Upload full release directory
+      uses: actions/upload-artifact@v4
+      with:
+        name: mediatek-openwrt-full-release
+        path: openwrt/autobuild_release/
+        compression-level: 0
