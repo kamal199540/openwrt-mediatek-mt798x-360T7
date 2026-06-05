@@ -11,14 +11,24 @@ on:
         options:
           - filogic
           - filogic-mac80211
+      clean:
+        description: 'Clean build (full rebuild)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 620
+    timeout-minutes: 240  # ← تم التمديد إلى 4 ساعات
+    permissions:
+      contents: write
 
     steps:
-    - name: Checkout repository (self)
+    - name: Checkout repository
       uses: actions/checkout@v4
 
     - name: Install build dependencies
@@ -29,6 +39,21 @@ jobs:
           python3-distutils python3-setuptools rsync swig unzip zlib1g-dev \
           file wget time
 
+    # ========== CACHE ==========
+    - name: Cache toolchain and packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          openwrt/dl
+          openwrt/build_dir
+          openwrt/staging_dir
+          openwrt/tmp
+        key: mediatek-build-${{ runner.os }}-${{ github.event.inputs.target }}-${{ hashFiles('openwrt/feeds.conf*') }}
+        restore-keys: |
+          mediatek-build-${{ runner.os }}-${{ github.event.inputs.target }}-
+          mediatek-build-${{ runner.os }}-
+
+    # ========== SOURCE ==========
     - name: Clone OpenWrt source
       run: |
         git clone https://git.openwrt.org/openwrt/openwrt.git openwrt
@@ -43,39 +68,111 @@ jobs:
         git checkout 5ee86b89bc62dee10d8db1e0a48fdd140dd2ec3e
         cd ..
 
+    # ========== PREPARE ==========
     - name: Set up autobuild environment
       run: |
         cd openwrt
         bash ../mtk-openwrt-feeds/autobuild/unified/autobuild.sh ${{ github.event.inputs.target }} prepare bootloader=1
         cd ..
 
+    # ========== CLEAN (if requested) ==========
+    - name: Clean build (if requested)
+      if: github.event.inputs.clean == 'true'
+      run: |
+        cd openwrt
+        bash ../mtk-openwrt-feeds/autobuild/unified/autobuild.sh fullclean
+        cd ..
+
+    # ========== BUILD ==========
     - name: Build firmware
       run: |
         cd openwrt
         bash ../mtk-openwrt-feeds/autobuild/unified/autobuild.sh build
         cd ..
 
+    # ========== RELEASE (collect images) ==========
     - name: Collect release artifacts
       run: |
         cd openwrt
         bash ../mtk-openwrt-feeds/autobuild/unified/autobuild.sh release bootloader=1
         cd ..
 
-    - name: Upload firmware images
+    # ========== FIND AND DISPLAY FILES ==========
+    - name: Find and display sysupgrade files
+      run: |
+        echo "========================================="
+        echo "Searching for sysupgrade files..."
+        echo "========================================="
+        find openwrt/autobuild_release -name "*.itb" -ls 2>/dev/null || echo "No .itb files found"
+        echo "---"
+        find openwrt/autobuild_release -name "*.bin" -ls 2>/dev/null || echo "No .bin files found"
+        echo "---"
+        find openwrt/autobuild_release -name "*.img" -ls 2>/dev/null || echo "No .img files found"
+        echo "========================================="
+
+    # ========== UPLOAD ARTIFACTS ==========
+    - name: Upload sysupgrade images
       uses: actions/upload-artifact@v4
       with:
-        name: mediatek-openwrt-${{ github.event.inputs.target }}
+        name: mediatek-${{ github.event.inputs.target }}-sysupgrade
         path: |
           openwrt/autobuild_release/**/*.itb
           openwrt/autobuild_release/**/*.bin
           openwrt/autobuild_release/**/*.img
-          openwrt/autobuild_release/**/*.fip
         compression-level: 0
         if-no-files-found: warn
 
     - name: Upload full release directory
       uses: actions/upload-artifact@v4
       with:
-        name: mediatek-openwrt-full-release
+        name: mediatek-full-release-${{ github.event.inputs.target }}
         path: openwrt/autobuild_release/
         compression-level: 0
+
+    - name: Upload bootloader images
+      uses: actions/upload-artifact@v4
+      with:
+        name: mediatek-bootloader-${{ github.event.inputs.target }}
+        path: |
+          openwrt/autobuild_release/**/*.img
+          openwrt/autobuild_release/**/*.fip
+        compression-level: 0
+        if-no-files-found: warn
+
+    # ========== CREATE RELEASE ==========
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      if: success()
+      with:
+        tag_name: mediatek-${{ github.run_number }}-${{ github.run_id }}
+        name: MediaTek OpenWrt 25.12 - Build ${{ github.run_number }}
+        body: |
+          ## MediaTek OpenWrt 25.12 for MT798x devices
+          
+          - **Build date**: ${{ github.event.repository.updated_at }}
+          - **Kernel**: 6.12
+          - **OpenWrt**: 25.12
+          - **Source**: git01.mediatek.com (official MediaTek feeds)
+          - **Bootloader**: MediaTek official U-Boot included
+          
+          ### Supported devices
+          - MT7981 (360T7, AX3000T, etc.)
+          - MT7986
+          - MT7987
+          - MT7988
+          
+          ### Installation
+          1. Enter U-Boot
+          2. Upload the `*.itb` or `*.bin` file from the sysupgrade artifact
+          3. Wait for flashing to complete
+          
+          ### DT Overlay (for 360T7)
+          After installation, in U-Boot run:
+          ```
+          setenv bootconf mt7981-rfb-spim-nand-nmbm
+          saveenv
+          ```
+        files: |
+          openwrt/autobuild_release/**/*.itb
+          openwrt/autobuild_release/**/*.bin
+        fail_on_unmatched_files: false
