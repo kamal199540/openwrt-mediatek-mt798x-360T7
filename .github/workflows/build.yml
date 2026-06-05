@@ -1,16 +1,8 @@
-name: Build MediaTek OpenWrt 25.12 (MT798x)
+name: Build ImmortalWrt with MediaTek Proprietary WiFi (padavanonly)
 
 on:
   workflow_dispatch:
     inputs:
-      target:
-        description: 'Build target'
-        required: true
-        default: 'filogic-mac80211'
-        type: choice
-        options:
-          - filogic
-          - filogic-mac80211
       clean:
         description: 'Clean build (full rebuild)'
         required: false
@@ -23,7 +15,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240  # ← تم التمديد إلى 4 ساعات
+    timeout-minutes: 240
     permissions:
       contents: write
 
@@ -48,31 +40,44 @@ jobs:
           openwrt/build_dir
           openwrt/staging_dir
           openwrt/tmp
-        key: mediatek-build-${{ runner.os }}-${{ github.event.inputs.target }}-${{ hashFiles('openwrt/feeds.conf*') }}
+        key: padavanonly-build-${{ runner.os }}-${{ hashFiles('openwrt/feeds.conf*') }}
         restore-keys: |
-          mediatek-build-${{ runner.os }}-${{ github.event.inputs.target }}-
-          mediatek-build-${{ runner.os }}-
+          padavanonly-build-${{ runner.os }}-
 
-    # ========== SOURCE ==========
-    - name: Clone OpenWrt source
+    # ========== SOURCE (padavanonly - has proprietary WiFi) ==========
+    - name: Clone ImmortalWrt source (padavanonly)
       run: |
-        git clone https://git.openwrt.org/openwrt/openwrt.git openwrt
+        git clone https://github.com/padavanonly/immortalwrt-mt798x-6.6.git openwrt
         cd openwrt
-        git checkout 8a18e84a887379db8954449a9fabe6df54084dea
+        git checkout openwrt-24.10
         cd ..
 
-    - name: Clone MediaTek feeds
-      run: |
-        git clone --branch master https://git01.mediatek.com/openwrt/feeds/mtk-openwrt-feeds
-        cd mtk-openwrt-feeds
-        git checkout 5ee86b89bc62dee10d8db1e0a48fdd140dd2ec3e
-        cd ..
-
-    # ========== PREPARE ==========
-    - name: Set up autobuild environment
+    - name: Update feeds
       run: |
         cd openwrt
-        bash ../mtk-openwrt-feeds/autobuild/unified/autobuild.sh ${{ github.event.inputs.target }} prepare bootloader=1
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        cd ..
+
+    # ========== CONFIGURE FOR 360T7 ==========
+    - name: Configure for 360T7
+      run: |
+        cd openwrt
+        cat >> .config << 'EOF'
+CONFIG_TARGET_mediatek=y
+CONFIG_TARGET_mediatek_mt7981=y
+CONFIG_TARGET_mediatek_mt7981_DEVICE_qihoo_360t7=y
+CONFIG_TARGET_IMAGES_GZIP=y
+CONFIG_TARGET_ROOTFS_SQUASHFS=y
+EOF
+        make defconfig
+        cd ..
+
+    # ========== DOWNLOAD SOURCES ==========
+    - name: Download all sources
+      run: |
+        cd openwrt
+        make download -j8
         cd ..
 
     # ========== CLEAN (if requested) ==========
@@ -80,99 +85,70 @@ jobs:
       if: github.event.inputs.clean == 'true'
       run: |
         cd openwrt
-        bash ../mtk-openwrt-feeds/autobuild/unified/autobuild.sh fullclean
+        make clean
         cd ..
 
     # ========== BUILD ==========
     - name: Build firmware
       run: |
         cd openwrt
-        bash ../mtk-openwrt-feeds/autobuild/unified/autobuild.sh build
-        cd ..
-
-    # ========== RELEASE (collect images) ==========
-    - name: Collect release artifacts
-      run: |
-        cd openwrt
-        bash ../mtk-openwrt-feeds/autobuild/unified/autobuild.sh release bootloader=1
+        make V=s -j$(nproc)
         cd ..
 
     # ========== FIND AND DISPLAY FILES ==========
-    - name: Find and display sysupgrade files
+    - name: Find sysupgrade file
       run: |
         echo "========================================="
-        echo "Searching for sysupgrade files..."
-        echo "========================================="
-        find openwrt/autobuild_release -name "*.itb" -ls 2>/dev/null || echo "No .itb files found"
+        echo "Looking for sysupgrade.bin..."
+        find openwrt/bin -name "*sysupgrade.bin" -ls 2>/dev/null || echo "Not found"
         echo "---"
-        find openwrt/autobuild_release -name "*.bin" -ls 2>/dev/null || echo "No .bin files found"
-        echo "---"
-        find openwrt/autobuild_release -name "*.img" -ls 2>/dev/null || echo "No .img files found"
+        echo "All .bin files:"
+        find openwrt/bin -name "*.bin" -ls 2>/dev/null || echo "No .bin files"
         echo "========================================="
 
     # ========== UPLOAD ARTIFACTS ==========
-    - name: Upload sysupgrade images
+    - name: Upload sysupgrade image
       uses: actions/upload-artifact@v4
       with:
-        name: mediatek-${{ github.event.inputs.target }}-sysupgrade
+        name: immortalwrt-360t7-proprietary-wifi
         path: |
-          openwrt/autobuild_release/**/*.itb
-          openwrt/autobuild_release/**/*.bin
-          openwrt/autobuild_release/**/*.img
+          openwrt/bin/**/*sysupgrade.bin
+          openwrt/bin/**/*factory.bin
         compression-level: 0
         if-no-files-found: warn
 
-    - name: Upload full release directory
+    - name: Upload full bin directory
       uses: actions/upload-artifact@v4
       with:
-        name: mediatek-full-release-${{ github.event.inputs.target }}
-        path: openwrt/autobuild_release/
+        name: full-bin-directory
+        path: openwrt/bin/
         compression-level: 0
-
-    - name: Upload bootloader images
-      uses: actions/upload-artifact@v4
-      with:
-        name: mediatek-bootloader-${{ github.event.inputs.target }}
-        path: |
-          openwrt/autobuild_release/**/*.img
-          openwrt/autobuild_release/**/*.fip
-        compression-level: 0
-        if-no-files-found: warn
 
     # ========== CREATE RELEASE ==========
     - name: Create Release
       uses: softprops/action-gh-release@v2
       if: success()
       with:
-        tag_name: mediatek-${{ github.run_number }}-${{ github.run_id }}
-        name: MediaTek OpenWrt 25.12 - Build ${{ github.run_number }}
+        tag_name: build-${{ github.run_number }}-${{ github.run_id }}
+        name: ImmortalWrt 360T7 - Proprietary WiFi Driver
         body: |
-          ## MediaTek OpenWrt 25.12 for MT798x devices
+          ## ImmortalWrt for 360T7 with **MediaTek Proprietary WiFi Driver**
           
-          - **Build date**: ${{ github.event.repository.updated_at }}
-          - **Kernel**: 6.12
-          - **OpenWrt**: 25.12
-          - **Source**: git01.mediatek.com (official MediaTek feeds)
-          - **Bootloader**: MediaTek official U-Boot included
-          
-          ### Supported devices
-          - MT7981 (360T7, AX3000T, etc.)
-          - MT7986
-          - MT7987
-          - MT7988
+          - **Source**: padavanonly/immortalwrt-mt798x-6.6
+          - **Kernel**: 6.6
+          - **WiFi Driver**: **Proprietary (Closed Source) from MediaTek**
+          - **Performance**: ~900+ Mbps (much faster than open source mt76)
           
           ### Installation
-          1. Enter U-Boot
-          2. Upload the `*.itb` or `*.bin` file from the sysupgrade artifact
+          1. Enter U-Boot (custom/hanwckf uboot)
+          2. Upload the `*sysupgrade.bin` file
           3. Wait for flashing to complete
           
-          ### DT Overlay (for 360T7)
-          After installation, in U-Boot run:
-          ```
-          setenv bootconf mt7981-rfb-spim-nand-nmbm
-          saveenv
-          ```
+          ### Features
+          - High-performance WiFi (MediaTek proprietary driver)
+          - Hardware NAT (HNAT) acceleration
+          - Full Mesh/WDS support
         files: |
-          openwrt/autobuild_release/**/*.itb
-          openwrt/autobuild_release/**/*.bin
+          openwrt/bin/**/*sysupgrade.bin
+          openwrt/bin/**/*factory.bin
         fail_on_unmatched_files: false
