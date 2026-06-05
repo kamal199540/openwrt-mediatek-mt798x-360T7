@@ -1,29 +1,20 @@
-name: Build ImmortalWrt with MediaTek Proprietary WiFi (padavanonly)
+name: Build ImmortalWrt 360T7 - Stable (Proprietary WiFi)
 
 on:
   workflow_dispatch:
-    inputs:
-      clean:
-        description: 'Clean build (full rebuild)'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'false'
-          - 'true'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
+    timeout-minutes: 200
     permissions:
       contents: write
 
     steps:
-    - name: Checkout repository
+    - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Install build dependencies
+    - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y build-essential clang flex bison g++ gawk \
@@ -31,35 +22,25 @@ jobs:
           python3-distutils python3-setuptools rsync swig unzip zlib1g-dev \
           file wget time
 
-    # ========== CACHE ==========
-    - name: Cache toolchain and packages
+    - name: Cache
       uses: actions/cache@v4
       with:
         path: |
           openwrt/dl
           openwrt/build_dir
           openwrt/staging_dir
-          openwrt/tmp
-        key: padavanonly-build-${{ runner.os }}-${{ hashFiles('openwrt/feeds.conf*') }}
-        restore-keys: |
-          padavanonly-build-${{ runner.os }}-
+        key: stable-360t7-${{ runner.os }}
 
-    # ========== SOURCE (padavanonly - has proprietary WiFi) ==========
-    - name: Clone ImmortalWrt source (padavanonly)
+    - name: Clone source (padavanonly - openwrt-24.10)
       run: |
-        git clone https://github.com/padavanonly/immortalwrt-mt798x-6.6.git openwrt
-        cd openwrt
-        git checkout openwrt-24.10
-        cd ..
+        git clone -b openwrt-24.10 https://github.com/padavanonly/immortalwrt-mt798x-6.6.git openwrt
 
     - name: Update feeds
       run: |
         cd openwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-        cd ..
 
-    # ========== CONFIGURE FOR 360T7 ==========
     - name: Configure for 360T7
       run: |
         cd openwrt
@@ -71,84 +52,34 @@ CONFIG_TARGET_IMAGES_GZIP=y
 CONFIG_TARGET_ROOTFS_SQUASHFS=y
 EOF
         make defconfig
-        cd ..
 
-    # ========== DOWNLOAD SOURCES ==========
-    - name: Download all sources
+    - name: Download sources
       run: |
         cd openwrt
         make download -j8
-        cd ..
 
-    # ========== CLEAN (if requested) ==========
-    - name: Clean build (if requested)
-      if: github.event.inputs.clean == 'true'
-      run: |
-        cd openwrt
-        make clean
-        cd ..
-
-    # ========== BUILD ==========
-    - name: Build firmware
+    - name: Build
       run: |
         cd openwrt
         make V=s -j$(nproc)
-        cd ..
 
-    # ========== FIND AND DISPLAY FILES ==========
-    - name: Find sysupgrade file
-      run: |
-        echo "========================================="
-        echo "Looking for sysupgrade.bin..."
-        find openwrt/bin -name "*sysupgrade.bin" -ls 2>/dev/null || echo "Not found"
-        echo "---"
-        echo "All .bin files:"
-        find openwrt/bin -name "*.bin" -ls 2>/dev/null || echo "No .bin files"
-        echo "========================================="
-
-    # ========== UPLOAD ARTIFACTS ==========
-    - name: Upload sysupgrade image
+    - name: Upload sysupgrade
       uses: actions/upload-artifact@v4
       with:
-        name: immortalwrt-360t7-proprietary-wifi
-        path: |
-          openwrt/bin/**/*sysupgrade.bin
-          openwrt/bin/**/*factory.bin
-        compression-level: 0
-        if-no-files-found: warn
+        name: immortalwrt-360t7-stable-proprietary
+        path: openwrt/bin/targets/**/*sysupgrade.bin
 
-    - name: Upload full bin directory
-      uses: actions/upload-artifact@v4
-      with:
-        name: full-bin-directory
-        path: openwrt/bin/
-        compression-level: 0
-
-    # ========== CREATE RELEASE ==========
     - name: Create Release
       uses: softprops/action-gh-release@v2
       if: success()
       with:
-        tag_name: build-${{ github.run_number }}-${{ github.run_id }}
-        name: ImmortalWrt 360T7 - Proprietary WiFi Driver
+        tag_name: stable-${{ github.run_number }}
+        name: ImmortalWrt 360T7 - Stable Proprietary WiFi
         body: |
-          ## ImmortalWrt for 360T7 with **MediaTek Proprietary WiFi Driver**
-          
-          - **Source**: padavanonly/immortalwrt-mt798x-6.6
-          - **Kernel**: 6.6
-          - **WiFi Driver**: **Proprietary (Closed Source) from MediaTek**
-          - **Performance**: ~900+ Mbps (much faster than open source mt76)
-          
-          ### Installation
-          1. Enter U-Boot (custom/hanwckf uboot)
-          2. Upload the `*sysupgrade.bin` file
-          3. Wait for flashing to complete
-          
-          ### Features
-          - High-performance WiFi (MediaTek proprietary driver)
-          - Hardware NAT (HNAT) acceleration
-          - Full Mesh/WDS support
+          ## النظام المستقر النهائي لجهاز 360T7
+          - **مبني من:** padavanonly/immortalwrt-mt798x-6.6 (فرع openwrt-24.10)
+          - **سائق الواي فاي:** مغلق (Proprietary) – أداء عالي
+          - **يعمل مباشرة مع Uboot المخصص ("هانك")**
+          - **مستقر ومجرب**
         files: |
-          openwrt/bin/**/*sysupgrade.bin
-          openwrt/bin/**/*factory.bin
-        fail_on_unmatched_files: false
+          openwrt/bin/targets/**/*sysupgrade.bin
